@@ -1,0 +1,20 @@
+[package]
+name = "lapl"
+version = "0.1.0"
+edition = "2021"
+description = "Spectral methods: graph Laplacian, eigenmaps, spectral clustering"
+license = "MIT OR Apache-2.0"
+keywords = ["spectral", "laplacian", "eigenmap", "clustering", "graph"]
+categories = ["algorithms", "science", "mathematics"]
+
+[dependencies]
+thiserror = "2.0"
+ndarray = "0.16"
+ndarray-linalg = { version = "0.17", optional = true }
+
+[features]
+default = []
+linalg = ["dep:ndarray-linalg"]
+
+[dev-dependencies]
+proptest = "1.5"
