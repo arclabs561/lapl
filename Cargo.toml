@@ -1,0 +1,33 @@
+[package]
+name = "lapl"
+version = "0.1.0"
+authors = ["Arc <attobop@gmail.com>"]
+edition = "2021"
+description = "Spectral methods: graph Laplacian, eigenmaps, spectral clustering"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/arclabs561/lapl"
+homepage = "https://github.com/arclabs561/lapl"
+documentation = "https://docs.rs/lapl"
+keywords = ["spectral", "laplacian", "eigenmap", "clustering", "graph"]
+categories = ["algorithms", "science", "mathematics"]
+
+[dependencies]
+thiserror = "2.0"
+ndarray = { version = "0.16", features = ["approx"] }
+faer = { version = "0.23.2", optional = true }
+rayon = { version = "1.10", optional = true }
+
+[features]
+default = []
+faer = ["dep:faer"]
+sparse = []
+parallel = ["dep:rayon", "ndarray/rayon"]
+
+[dev-dependencies]
+proptest = "1.5"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "spectral_scaling"
+path = "benches/spectral_scaling.rs"
+harness = false
