@@ -3,7 +3,7 @@
 //! This module is intentionally small:
 //! - a minimal CSR adjacency representation (undirected, weighted)
 //! - a matrix-free spectral embedding via orthogonal iteration on
-//!   \(S = D^{-1/2} A D^{-1/2}\), avoiding dense \(n \times n\) matrices.
+//!   $S = D^{-1/2} A D^{-1/2}$, avoiding dense $n \times n$ matrices.
 //!
 //! The intent is to unblock scaling beyond dense adjacency without committing to
 //! a full sparse linear algebra dependency stack.
