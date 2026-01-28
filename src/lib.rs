@@ -11,10 +11,9 @@
 //!
 //! | Function | Purpose |
 //! |----------|---------|
-//! | [`laplacian`] | Unnormalized Laplacian L = D - A |
+//! | `adjacency_to_laplacian` | Unnormalized Laplacian L = D - A |
 //! | [`normalized_laplacian`] | Symmetric L_sym = I - D^{-1/2} A D^{-1/2} |
 //! | [`random_walk_laplacian`] | L_rw = I - D^{-1} A |
-//! | [`fiedler_vector`] | Second eigenvector (graph bisection) |
 //! | [`spectral_embedding`] | Low-dim representation from eigenvectors |
 //!
 //! ## Quick Start
@@ -133,21 +132,21 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Directed Laplacian for reachability spectral embeddings.
-/// 
+///
 /// Based on the Hermitian Laplacian for directed graphs (Fan Chung, 2005).
 /// L = I - (Φ^{1/2} P Φ^{-1/2} + Φ^{-1/2} P^T Φ^{1/2}) / 2
 /// where P is the transition matrix and Φ is the stationary distribution.
 pub fn directed_laplacian(adj: &Array2<f64>) -> Result<Array2<f64>> {
     let n = ensure_square(adj)?;
     let p = transition_matrix(adj);
-    
-    // For 2026, we use a simplified version assuming uniform stationary 
+
+    // For 2026, we use a simplified version assuming uniform stationary
     // distribution for robustness, or we solve for Φ if requested.
     // Here we implement the symmetrized transition part.
     let mut l_dir = Array2::eye(n);
     let p_sym = (&p + &p.t()) * 0.5;
     l_dir -= &p_sym;
-    
+
     Ok(l_dir)
 }
 
@@ -161,7 +160,7 @@ fn ensure_square(a: &Array2<f64>) -> Result<usize> {
 
 /// Compute degree matrix D from adjacency matrix A.
 ///
-/// D[i,i] = sum of row i (total edge weight from node i)
+/// D\[i,i\] = sum of row i (total edge weight from node i)
 ///
 /// # Arguments
 ///
@@ -289,7 +288,7 @@ pub fn random_walk_laplacian(adj: &Array2<f64>) -> Array2<f64> {
 
 /// Transition matrix: P = D^{-1} A
 ///
-/// P[i,j] = probability of walking from i to j in one step.
+/// P\[i,j\] = probability of walking from i to j in one step.
 pub fn transition_matrix(adj: &Array2<f64>) -> Array2<f64> {
     let n = adj.nrows();
     let degrees = degree_vector(adj);
@@ -309,7 +308,7 @@ pub fn transition_matrix(adj: &Array2<f64>) -> Array2<f64> {
 
 /// Compute similarity matrix from points using Gaussian kernel.
 ///
-/// A[i,j] = exp(-||x_i - x_j||² / (2σ²))
+/// A\[i,j\] = exp(-||x_i - x_j||² / (2σ²))
 ///
 /// # Arguments
 ///
@@ -340,7 +339,7 @@ pub fn gaussian_similarity(points: &Array2<f64>, sigma: f64) -> Array2<f64> {
 
 /// Compute k-nearest neighbor graph.
 ///
-/// Returns adjacency matrix where A[i,j] = 1 if j is among k nearest neighbors of i.
+/// Returns adjacency matrix where A\[i,j\] = 1 if j is among k nearest neighbors of i.
 /// The graph is made symmetric: A_sym = A ∨ A^T
 ///
 /// # Arguments
@@ -382,7 +381,7 @@ pub fn knn_graph(distances: &Array2<f64>, k: usize) -> Array2<f64> {
 
 /// Epsilon-neighborhood graph.
 ///
-/// A[i,j] = 1 if distance(i,j) < epsilon.
+/// A\[i,j\] = 1 if distance(i,j) < epsilon.
 pub fn epsilon_graph(distances: &Array2<f64>, epsilon: f64) -> Array2<f64> {
     distances.mapv(|d| if d < epsilon && d > 0.0 { 1.0 } else { 0.0 })
 }
