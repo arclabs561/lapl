@@ -563,7 +563,7 @@ pub fn spectral_embedding(
         if n <= 512 {
             return spectral_embedding_faer_dense_from_laplacian(&lap, k, cfg);
         }
-        return spectral_embedding_faer_krylov_schur_from_laplacian(&lap, k, cfg);
+        spectral_embedding_faer_krylov_schur_from_laplacian(&lap, k, cfg)
     }
 
     #[cfg(not(feature = "faer"))]
@@ -736,7 +736,7 @@ fn spectral_embedding_faer_krylov_schur_from_laplacian(
 
     let req = partial_eigen_scratch(&a, r, par, params);
     let mut mem = MemBuffer::new(req);
-    let mut stack = MemStack::new(&mut mem);
+    let stack = MemStack::new(&mut mem);
 
     let _info = partial_self_adjoint_eigen(
         eigvecs.as_mut(),
@@ -745,7 +745,7 @@ fn spectral_embedding_faer_krylov_schur_from_laplacian(
         v0.as_ref(),
         cfg.jacobi_tol,
         par,
-        &mut stack,
+        stack,
         params,
     );
 

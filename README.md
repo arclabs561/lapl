@@ -7,6 +7,14 @@ Dual-licensed under MIT or Apache-2.0.
 
 [crates.io](https://crates.io/crates/lapl) | [docs.rs](https://docs.rs/lapl)
 
+## Quickstart
+
+```toml
+[dependencies]
+lapl = "0.1.0"
+ndarray = "0.16"
+```
+
 ```rust
 use lapl::{adjacency_to_laplacian, normalized_laplacian, gaussian_similarity};
 use ndarray::array;
