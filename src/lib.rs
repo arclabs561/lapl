@@ -71,9 +71,9 @@
 //!
 //! ## Connections
 //!
-//! - [`rkhs`](../rkhs): Gaussian kernel → similarity graph → Laplacian
-//! - [`strata`](../strata): Spectral clustering uses this crate
-//! - [`rmt`](../rmt): Random graph Laplacians follow RMT eigenvalue distributions
+//! - [`rkhs`](https://docs.rs/rkhs): Gaussian kernel → similarity graph → Laplacian
+//! - [`strata`](https://docs.rs/strata): Spectral clustering uses this crate
+//! - [`rmt`](https://docs.rs/rmt): Random graph Laplacians follow RMT eigenvalue distributions
 //!
 //! ## What Can Go Wrong
 //!
