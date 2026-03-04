@@ -1,5 +1,9 @@
 # lapl
 
+[![crates.io](https://img.shields.io/crates/v/lapl.svg)](https://crates.io/crates/lapl)
+[![Documentation](https://docs.rs/lapl/badge.svg)](https://docs.rs/lapl)
+[![CI](https://github.com/arclabs561/lapl/actions/workflows/ci.yml/badge.svg)](https://github.com/arclabs561/lapl/actions/workflows/ci.yml)
+
 Spectral graph theory primitives for manifold learning and connectivity analysis.
 Implements graph Laplacians (unnormalized, symmetric, random walk) and spectral embeddings.
 
