@@ -25,6 +25,7 @@ parallel = ["dep:rayon", "ndarray/rayon"]
 
 [dev-dependencies]
 proptest = "1.5"
+rmt = "0.1"
 criterion = { version = "0.5", features = ["html_reports"] }
 
 [[bench]]
