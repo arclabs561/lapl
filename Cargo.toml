@@ -17,11 +17,13 @@ categories = ["algorithms", "science", "mathematics"]
 thiserror = "2.0"
 ndarray = { version = "0.16", features = ["approx"] }
 faer = { version = "0.23.2", optional = true }
+petgraph = { version = "0.6", optional = true }
 rayon = { version = "1.10", optional = true }
 
 [features]
 default = []
 faer = ["dep:faer"]
+petgraph = ["dep:petgraph"]
 sparse = []
 parallel = ["dep:rayon", "ndarray/rayon"]
 
