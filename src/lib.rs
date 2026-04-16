@@ -98,6 +98,99 @@ use thiserror::Error;
 #[cfg(feature = "sparse")]
 pub mod sparse;
 
+/// Convert a petgraph graph to a dense adjacency matrix suitable for lapl functions.
+///
+/// Each edge contributes `1.0` (unweighted) or the edge weight (for `f64`-weighted graphs).
+/// For directed graphs the matrix is asymmetric; for undirected graphs both entries are set.
+///
+/// # Example
+///
+/// ```rust
+/// # #[cfg(feature = "petgraph")]
+/// # {
+/// use petgraph::graph::UnGraph;
+/// use lapl::adjacency_from_petgraph;
+///
+/// let mut g: UnGraph<(), f64> = UnGraph::new_undirected();
+/// let a = g.add_node(());
+/// let b = g.add_node(());
+/// let c = g.add_node(());
+/// g.add_edge(a, b, 1.0);
+/// g.add_edge(b, c, 1.0);
+///
+/// let adj = adjacency_from_petgraph(&g);
+/// assert_eq!(adj[[0, 1]], 1.0);
+/// assert_eq!(adj[[1, 0]], 1.0);
+/// assert_eq!(adj[[0, 2]], 0.0);
+/// # }
+/// ```
+#[cfg(feature = "petgraph")]
+pub fn adjacency_from_petgraph<N, E, Ty, Ix>(graph: &petgraph::Graph<N, E, Ty, Ix>) -> Array2<f64>
+where
+    Ty: petgraph::EdgeType,
+    Ix: petgraph::graph::IndexType,
+    E: Copy + Into<f64>,
+{
+    use petgraph::visit::EdgeRef;
+    let n = graph.node_count();
+    let mut adj = Array2::zeros((n, n));
+    for edge in graph.edge_references() {
+        let s = edge.source().index();
+        let t = edge.target().index();
+        let w: f64 = (*edge.weight()).into();
+        adj[[s, t]] = w;
+        if !<Ty as petgraph::EdgeType>::is_directed() {
+            adj[[t, s]] = w;
+        }
+    }
+    adj
+}
+
+/// Convert an unweighted petgraph graph to a dense adjacency matrix.
+///
+/// This variant works for any edge type and uses `1.0` for every edge.
+/// Use this when edge weights don't exist or are irrelevant.
+///
+/// # Example
+///
+/// ```rust
+/// # #[cfg(feature = "petgraph")]
+/// # {
+/// use petgraph::Graph;
+/// use lapl::adjacency_from_petgraph_unweighted;
+///
+/// let mut g: Graph<(), f32> = Graph::new();
+/// let a = g.add_node(());
+/// let b = g.add_node(());
+/// g.add_edge(a, b, 0.5);
+///
+/// let adj = adjacency_from_petgraph_unweighted(&g);
+/// assert_eq!(adj[[0, 1]], 1.0);
+/// assert_eq!(adj[[1, 0]], 0.0); // directed
+/// # }
+/// ```
+#[cfg(feature = "petgraph")]
+pub fn adjacency_from_petgraph_unweighted<N, E, Ty, Ix>(
+    graph: &petgraph::Graph<N, E, Ty, Ix>,
+) -> Array2<f64>
+where
+    Ty: petgraph::EdgeType,
+    Ix: petgraph::graph::IndexType,
+{
+    use petgraph::visit::EdgeRef;
+    let n = graph.node_count();
+    let mut adj = Array2::zeros((n, n));
+    for edge in graph.edge_references() {
+        let s = edge.source().index();
+        let t = edge.target().index();
+        adj[[s, t]] = 1.0;
+        if !<Ty as petgraph::EdgeType>::is_directed() {
+            adj[[t, s]] = 1.0;
+        }
+    }
+    adj
+}
+
 #[cfg(feature = "faer")]
 use faer::{
     dyn_stack::{MemBuffer, MemStack},
