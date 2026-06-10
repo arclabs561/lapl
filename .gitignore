@@ -3,3 +3,6 @@ Cargo.lock
 
 .DS_Store
 .cursor/
+
+# cargo-semver-checks-action scratch dir (publish workflow)
+/semver-checks/
