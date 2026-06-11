@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 //! # lapl
 //!
 //! Spectral methods: graph Laplacians, eigenmaps, spectral clustering.
@@ -198,30 +199,46 @@ use faer::{
     Col, Mat, Par, Side,
 };
 
+/// Errors returned by fallible lapl functions.
 #[derive(Debug, Error)]
 pub enum Error {
+    /// Input matrix has `rows != cols`; Laplacian operations require square matrices.
     #[error("matrix is not square: {0} x {1}")]
     NotSquare(usize, usize),
 
+    /// Adjacency matrix contains negative entries (edge weights must be ≥ 0).
     #[error("matrix has negative entries")]
     NegativeEntries,
 
+    /// Node at the given index has zero degree, so `D^{-1/2}` is undefined.
     #[error("zero degree node at index {0}")]
     ZeroDegree(usize),
 
+    /// Graph has more than one connected component (multiple zero eigenvalues).
     #[error("graph is disconnected (multiple zero eigenvalues)")]
     Disconnected,
 
+    /// Requested embedding dimension `k` does not fit: needs `n > k` (plus one
+    /// when the trivial constant eigenvector is skipped).
     #[error("invalid embedding dimension k={k} for n={n}")]
-    InvalidEmbeddingDim { k: usize, n: usize },
+    InvalidEmbeddingDim {
+        /// Requested embedding dimension.
+        k: usize,
+        /// Number of graph nodes.
+        n: usize,
+    },
 
+    /// Failure reported by an eigensolver backend (e.g. `faer`) or input validation
+    /// in sparse construction.
     #[error("backend error: {0}")]
     Backend(String),
 
+    /// Operation requires a directed graph but the input Laplacian is symmetric.
     #[error("asymmetric laplacian requires directed graph")]
     AsymmetricRequired,
 }
 
+/// Convenience alias for `std::result::Result` with [`enum@Error`].
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Directed Laplacian for reachability spectral embeddings.

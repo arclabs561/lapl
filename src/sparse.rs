@@ -58,7 +58,7 @@ impl CsrAdjacency {
         }
 
         // Sort by (row, col).
-        entries.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+        entries.sort_by_key(|a| (a.0, a.1));
 
         // Deduplicate by keeping the maximum weight per (row, col).
         let mut dedup: Vec<(usize, usize, f64)> = Vec::with_capacity(entries.len());
@@ -103,6 +103,7 @@ impl CsrAdjacency {
         })
     }
 
+    /// Number of nodes in the graph (matrix dimension).
     pub fn n(&self) -> usize {
         self.n
     }
