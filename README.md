@@ -14,7 +14,7 @@ Dual-licensed under MIT or Apache-2.0.
 
 ```toml
 [dependencies]
-lapl = "0.1.0"
+lapl = "0.1.2"
 ndarray = "0.16"
 ```
 
