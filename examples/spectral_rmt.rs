@@ -1,11 +1,12 @@
 //! Spectral analysis of graph Laplacians using Random Matrix Theory.
 //!
 //! Computes the Laplacian of random and structured graphs, extracts eigenvalues,
-//! and uses rmt to analyze whether the spectrum looks random (Wigner-like) or
-//! has structure (community signal above the MP/Wigner bulk).
+//! and uses RMT-style spacing and density summaries alongside graph-specific
+//! low-eigenvalue diagnostics.
 //!
-//! Key idea: eigenvalues below the RMT noise floor are noise; those above are
-//! signal revealing genuine graph structure (communities, hubs, bottlenecks).
+//! Key idea: for normalized graph Laplacians, community structure appears near
+//! the bottom of the spectrum. A graph with k weakly connected communities has
+//! k small eigenvalues followed by an eigengap.
 //!
 //! Run: cargo run --example spectral_rmt
 
@@ -69,9 +70,24 @@ fn analyze_spectrum(label: &str, eigenvalues: &[f64]) {
     let near_zero = eigenvalues.iter().filter(|&&e| e.abs() < 1e-6).count();
     println!("  Near-zero eigenvalues: {near_zero} (= connected components)");
 
-    // Effective dimension via RMT
-    let effective = rmt::effective_dimension(eigenvalues, n, n);
-    println!("  Signal dimensions (above MP bulk): {effective}");
+    let small_threshold = 0.1;
+    let small_count = eigenvalues.iter().filter(|&&e| e < small_threshold).count();
+    println!("  Eigenvalues < {small_threshold:.1}: {small_count}");
+    println!(
+        "  First eigenvalues: {}",
+        format_first_eigenvalues(eigenvalues, 8)
+    );
+
+    if let Some((idx, gap)) = largest_low_end_gap(eigenvalues, 8) {
+        println!(
+            "  Largest low-end gap: lambda_{idx}->lambda_{} = {gap:.4}",
+            idx + 1
+        );
+    }
+
+    // MP outlier count is a rough high-end diagnostic, not the community count.
+    let high_end_outliers = rmt::effective_dimension(eigenvalues, n, n);
+    println!("  MP high-end outliers: {high_end_outliers}");
 
     // Histogram summary
     let (centers, densities) = empirical_spectral_density(eigenvalues, 10);
@@ -91,6 +107,26 @@ fn analyze_spectrum(label: &str, eigenvalues: &[f64]) {
         let q3 = sorted_ratios[3 * sorted_ratios.len() / 4];
         println!("  Spacing ratio quartiles: Q1={q1:.3} med={median:.3} Q3={q3:.3}");
     }
+}
+
+fn format_first_eigenvalues(eigenvalues: &[f64], limit: usize) -> String {
+    eigenvalues
+        .iter()
+        .take(limit)
+        .map(|e| format!("{e:.4}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn largest_low_end_gap(eigenvalues: &[f64], limit: usize) -> Option<(usize, f64)> {
+    let upper = eigenvalues.len().min(limit);
+    if upper < 2 {
+        return None;
+    }
+
+    (0..upper - 1)
+        .map(|idx| (idx, eigenvalues[idx + 1] - eigenvalues[idx]))
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
 }
 
 /// Simple eigenvalue computation via Jacobi iteration (for small symmetric matrices).

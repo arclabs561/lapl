@@ -10,6 +10,9 @@ Dual-licensed under MIT or Apache-2.0.
 
 [crates.io](https://crates.io/crates/lapl) | [docs.rs](https://docs.rs/lapl)
 
+See [examples/README.md](examples/README.md) for the runnable spectral
+diagnostic example.
+
 ## Quickstart
 
 ```toml
