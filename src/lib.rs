@@ -931,6 +931,53 @@ mod tests {
     use proptest::prelude::*;
 
     #[test]
+    fn laplacian_quadratic_form_matches_edge_differences() {
+        // Path graph 0-1-2. x^T L x = (1/2) sum_ij A_ij (x_i - x_j)^2 (Chung,
+        // Spectral Graph Theory): zero for a constant vector, a known value from
+        // the edge differences, and non-negative (L is positive semidefinite).
+        let adj = array![[0.0, 1.0, 0.0], [1.0, 0.0, 1.0], [0.0, 1.0, 0.0]];
+        let lap = adjacency_to_laplacian(&adj);
+
+        let ones = array![1.0, 1.0, 1.0];
+        assert!(laplacian_quadratic_form(&lap, &ones).abs() < 1e-12);
+
+        // x = [1, 2, 3] -> edge differences 1^2 + 1^2 = 2.
+        let x = array![1.0, 2.0, 3.0];
+        assert!((laplacian_quadratic_form(&lap, &x) - 2.0).abs() < 1e-12);
+
+        let y = array![0.5, -1.5, 2.0];
+        assert!(laplacian_quadratic_form(&lap, &y) >= -1e-12);
+    }
+
+    proptest! {
+        /// For any weighted graph and any x, the Laplacian quadratic form equals
+        /// the edge-difference sum and is non-negative (positive semidefinite).
+        #[test]
+        fn prop_quadratic_form_is_edge_differences_and_psd(
+            w in proptest::array::uniform6(0.0f64..5.0),
+            x in proptest::array::uniform4(-10.0f64..10.0),
+        ) {
+            let pairs = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
+            let mut adj = ndarray::Array2::<f64>::zeros((4, 4));
+            for (k, &(i, j)) in pairs.iter().enumerate() {
+                adj[[i, j]] = w[k];
+                adj[[j, i]] = w[k];
+            }
+            let lap = adjacency_to_laplacian(&adj);
+            let qf = laplacian_quadratic_form(&lap, &ndarray::Array1::from(x.to_vec()));
+
+            // x^T L x = sum over undirected edges of A_ij (x_i - x_j)^2.
+            let mut edge_sum = 0.0;
+            for &(i, j) in &pairs {
+                let d = x[i] - x[j];
+                edge_sum += adj[[i, j]] * d * d;
+            }
+            prop_assert!((qf - edge_sum).abs() < 1e-6 * (1.0 + edge_sum.abs()));
+            prop_assert!(qf >= -1e-9);
+        }
+    }
+
+    #[test]
     fn test_laplacian_basic() {
         // Path graph: 0 -- 1 -- 2
         let adj = array![[0.0, 1.0, 0.0], [1.0, 0.0, 1.0], [0.0, 1.0, 0.0]];
