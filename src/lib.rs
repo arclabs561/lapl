@@ -1044,6 +1044,65 @@ mod tests {
         assert_eq!(u.ncols(), 1);
     }
 
+    #[test]
+    fn is_connected_matches_known_graphs() {
+        // Path 0--1--2 is connected; two disjoint edges are not.
+        let path = array![[0.0, 1.0, 0.0], [1.0, 0.0, 1.0], [0.0, 1.0, 0.0]];
+        assert!(is_connected(&path));
+        let two_comps = array![
+            [0.0, 1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0, 0.0],
+        ];
+        assert!(!is_connected(&two_comps));
+    }
+
+    #[test]
+    fn spectral_embedding_recovers_disconnected_components() {
+        // Two disjoint triangles {0,1,2} and {3,4,5}. The Laplacian kernel is
+        // spanned by the component indicators, so the two smallest-eigenvalue
+        // eigenvectors must be constant within each component (external spectral
+        // truth: zero-eigenvalue multiplicity = number of components). This checks
+        // the eigensolver against known theory, not against another solver.
+        let adj = array![
+            [0.0, 1.0, 1.0, 0.0, 0.0, 0.0],
+            [1.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0, 1.0, 1.0],
+            [0.0, 0.0, 0.0, 1.0, 0.0, 1.0],
+            [0.0, 0.0, 0.0, 1.0, 1.0, 0.0],
+        ];
+        let cfg = SpectralEmbeddingConfig {
+            skip_first: false,
+            row_normalize: false,
+            ..Default::default()
+        };
+        let emb = spectral_embedding(&adj, 2, &cfg).unwrap();
+
+        let comp_a = [0usize, 1, 2];
+        let comp_b = [3usize, 4, 5];
+        let mut distinguishes = false;
+        for c in 0..emb.ncols() {
+            for comp in [&comp_a, &comp_b] {
+                let vals: Vec<f64> = comp.iter().map(|&i| emb[[i, c]]).collect();
+                let spread = vals.iter().cloned().fold(f64::MIN, f64::max)
+                    - vals.iter().cloned().fold(f64::MAX, f64::min);
+                assert!(
+                    spread < 1e-6,
+                    "column {c} not constant within component: spread {spread}"
+                );
+            }
+            if (emb[[0, c]] - emb[[3, c]]).abs() > 1e-3 {
+                distinguishes = true;
+            }
+        }
+        assert!(
+            distinguishes,
+            "embedding does not separate the two components"
+        );
+    }
+
     #[cfg(feature = "faer")]
     #[test]
     fn spectral_embedding_faer_dense_agrees_with_jacobi_on_small_graph() {
