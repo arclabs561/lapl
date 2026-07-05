@@ -611,6 +611,21 @@ fn jacobi_eigh(a: &Array2<f64>, tol: f64, max_sweeps: usize) -> (Vec<f64>, Array
     (eigvals, v)
 }
 
+/// Eigenvalues of a dense symmetric matrix, sorted ascending.
+///
+/// This uses the same deterministic Jacobi eigensolver that backs the small-n
+/// path in [`spectral_embedding`]. It is intended for graph Laplacians and other
+/// small dense symmetric matrices where callers need the spectrum itself rather
+/// than an embedding.
+///
+/// The input must be square. The routine assumes the matrix is symmetric.
+pub fn symmetric_eigenvalues(a: &Array2<f64>, tol: f64, max_sweeps: usize) -> Result<Vec<f64>> {
+    ensure_square(a)?;
+    let (mut eigvals, _) = jacobi_eigh(a, tol, max_sweeps);
+    eigvals.sort_by(|a, b| a.total_cmp(b));
+    Ok(eigvals)
+}
+
 /// Approximate spectral embedding: the k eigenvectors after the trivial constant one.
 ///
 /// This uses **orthogonal iteration** on the dense matrix \(A = I - L_{sym}\) to
@@ -1042,6 +1057,17 @@ mod tests {
         let u = spectral_embedding(&adj, 1, &SpectralEmbeddingConfig::default()).unwrap();
         assert_eq!(u.nrows(), 3);
         assert_eq!(u.ncols(), 1);
+    }
+
+    #[test]
+    fn symmetric_eigenvalues_match_two_node_laplacian() {
+        let adj = array![[0.0, 1.0], [1.0, 0.0]];
+        let lap = adjacency_to_laplacian(&adj);
+        let eigs = symmetric_eigenvalues(&lap, 1e-12, 100).unwrap();
+
+        assert_eq!(eigs.len(), 2);
+        assert!(eigs[0].abs() < 1e-10, "lambda_0 = {}", eigs[0]);
+        assert!((eigs[1] - 2.0).abs() < 1e-10, "lambda_1 = {}", eigs[1]);
     }
 
     #[test]
