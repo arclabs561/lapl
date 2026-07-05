@@ -17,7 +17,7 @@ diagnostic example.
 
 ```toml
 [dependencies]
-lapl = "0.1.2"
+lapl = "0.2"
 ndarray = "0.16"
 ```
 
@@ -50,6 +50,7 @@ let lap_norm = normalized_laplacian(&adj);    // L_sym = I - D^{-1/2} A D^{-1/2}
 | `epsilon_graph` | Epsilon-neighborhood |
 | `is_connected` | Check connectivity |
 | `laplacian_quadratic_form` | x^T L x |
+| `symmetric_eigenvalues` | Eigenvalues for symmetric matrices |
 
 ## The Laplacian Zoo
 
