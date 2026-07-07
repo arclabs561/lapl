@@ -2,13 +2,8 @@
 
 [![crates.io](https://img.shields.io/crates/v/lapl.svg)](https://crates.io/crates/lapl)
 [![Documentation](https://docs.rs/lapl/badge.svg)](https://docs.rs/lapl)
-[![CI](https://github.com/arclabs561/lapl/actions/workflows/ci.yml/badge.svg)](https://github.com/arclabs561/lapl/actions/workflows/ci.yml)
 
 Spectral graph methods.
-
-Dual-licensed under MIT or Apache-2.0.
-
-[crates.io](https://crates.io/crates/lapl) | [docs.rs](https://docs.rs/lapl)
 
 See [examples/README.md](examples/README.md) for the runnable spectral
 diagnostic example.
