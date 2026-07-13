@@ -52,3 +52,8 @@ let lap_norm = normalized_laplacian(&adj);    // L_sym = I - D^{-1/2} A D^{-1/2}
 - **Unnormalized L = D - A**: Simple but scale-dependent
 - **Normalized L_sym**: Eigenvalues in [0, 2], used for spectral clustering
 - **Random walk L_rw**: Same spectrum as L_sym, different eigenvectors
+
+## License
+
+Licensed under either the [Apache License, Version 2.0](LICENSE-APACHE) or
+the [MIT license](LICENSE-MIT), at your option.
