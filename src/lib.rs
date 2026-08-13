@@ -611,6 +611,28 @@ fn jacobi_eigh(a: &Array2<f64>, tol: f64, max_sweeps: usize) -> (Vec<f64>, Array
     (eigvals, v)
 }
 
+/// Rotate an orthonormal basis into ascending Ritz-vector order.
+///
+/// `projected` is the representation of the normalized Laplacian in `q`.
+#[cfg(any(not(feature = "faer"), feature = "sparse"))]
+pub(crate) fn rayleigh_ritz_rotate(
+    q: Array2<f64>,
+    projected: &Array2<f64>,
+    cfg: &SpectralEmbeddingConfig,
+) -> Array2<f64> {
+    let (eigvals, eigvecs) = jacobi_eigh(projected, cfg.jacobi_tol, cfg.jacobi_max_sweeps);
+    let mut order: Vec<usize> = (0..eigvals.len()).collect();
+    order.sort_by(|&i, &j| eigvals[i].total_cmp(&eigvals[j]));
+
+    let mut rotation = Array2::<f64>::zeros(eigvecs.dim());
+    for (out_col, &eig_idx) in order.iter().enumerate() {
+        rotation
+            .column_mut(out_col)
+            .assign(&eigvecs.column(eig_idx));
+    }
+    q.dot(&rotation)
+}
+
 /// Eigenvalues of a dense symmetric matrix, sorted ascending.
 ///
 /// This uses the same deterministic Jacobi eigensolver that backs the small-n
@@ -628,9 +650,9 @@ pub fn symmetric_eigenvalues(a: &Array2<f64>, tol: f64, max_sweeps: usize) -> Re
 
 /// Approximate spectral embedding: the k eigenvectors after the trivial constant one.
 ///
-/// This uses **orthogonal iteration** on the dense matrix \(A = I - L_{sym}\) to
-/// approximate the top eigenvectors of A (which correspond to the smallest
-/// eigenvectors of \(L_{sym}\)).
+/// This uses **orthogonal iteration** on the positive-semidefinite shift
+/// \(A = 2I - L_{sym}\), followed by a Rayleigh--Ritz projection to order the
+/// approximate eigenvectors of \(L_{sym}\).
 ///
 /// This is a pragmatic, dependency-free default. It is intended for small/medium n
 /// where you can afford dense adjacency, but do not want LAPACK/BLAS.
@@ -693,8 +715,11 @@ pub fn spectral_embedding(
 
     #[cfg(not(feature = "faer"))]
     {
-        // Otherwise (no faer): orthogonal iteration on A = I - L_sym.
-        let a = Array2::eye(n) - &lap;
+        // Otherwise (no faer): orthogonal iteration on the PSD shift
+        // A = 2I - L_sym. Using I - L_sym would select eigenvalues by
+        // magnitude and can therefore converge to high-frequency modes on
+        // bipartite graphs.
+        let a = Array2::eye(n) * 2.0 - &lap;
 
         // We want enough eigenvectors to allow skipping the first if requested.
         let r = k + start;
@@ -736,6 +761,11 @@ pub fn spectral_embedding(
             q = orthonormalize(z);
         }
 
+        // Orthogonal iteration identifies an invariant subspace, but its
+        // columns are not ordered eigenvectors. Rayleigh--Ritz diagonalizes
+        // L within that subspace before skip_first is applied.
+        let projected = q.t().dot(&lap.dot(&q));
+        q = rayleigh_ritz_rotate(q, &projected, cfg);
         let mut u = q.slice(ndarray::s![.., start..(start + k)]).to_owned();
 
         if cfg.row_normalize {
@@ -855,7 +885,7 @@ fn spectral_embedding_faer_krylov_schur_from_laplacian(
 
     let par = Par::Seq;
     let params = PartialEigenParams {
-        max_restarts: 8,
+        max_restarts: cfg.iters.max(1),
         ..Default::default()
     };
 
@@ -863,7 +893,7 @@ fn spectral_embedding_faer_krylov_schur_from_laplacian(
     let mut mem = MemBuffer::new(req);
     let stack = MemStack::new(&mut mem);
 
-    let _info = partial_self_adjoint_eigen(
+    let info = partial_self_adjoint_eigen(
         eigvecs.as_mut(),
         &mut eigvals,
         &a,
@@ -873,6 +903,12 @@ fn spectral_embedding_faer_krylov_schur_from_laplacian(
         stack,
         params,
     );
+    if info.n_converged_eigen < r {
+        return Err(Error::Backend(format!(
+            "faer partial eigensolver converged {}/{} eigenpairs",
+            info.n_converged_eigen, r
+        )));
+    }
 
     // Convert eigenvectors into ndarray embedding.
     let mut u = Array2::<f64>::zeros((n, k));

@@ -2,13 +2,13 @@
 //!
 //! This module is intentionally small:
 //! - a minimal CSR adjacency representation (undirected, weighted)
-//! - a matrix-free spectral embedding via orthogonal iteration on
-//!   $S = D^{-1/2} A D^{-1/2}$, avoiding dense $n \times n$ matrices.
+//! - a matrix-free spectral embedding via orthogonal iteration on the shifted
+//!   operator $I + D^{-1/2} A D^{-1/2}$, avoiding dense $n \times n$ matrices.
 //!
 //! The intent is to unblock scaling beyond dense adjacency without committing to
 //! a full sparse linear algebra dependency stack.
 
-use crate::{Error, Result, SpectralEmbeddingConfig};
+use crate::{rayleigh_ritz_rotate, Error, Result, SpectralEmbeddingConfig};
 use ndarray::{Array2, ArrayView2};
 
 #[cfg(feature = "parallel")]
@@ -220,9 +220,9 @@ fn apply_normalized_similarity_batch(
 /// Matrix-free spectral embedding for a sparse adjacency.
 ///
 /// We avoid forming the dense normalized Laplacian. Instead, we perform
-/// orthogonal iteration on \(S = D^{-1/2} A D^{-1/2}\), whose **top**
-/// eigenvectors correspond to the **bottom** eigenvectors of
-/// \(L_{sym} = I - S\).
+/// orthogonal iteration on the positive-semidefinite shift
+/// \(I + S = 2I - L_{sym}\), followed by a Rayleigh--Ritz projection that
+/// orders the approximate eigenvectors of \(L_{sym} = I - S\).
 pub fn spectral_embedding_sparse(
     adj: &CsrAdjacency,
     k: usize,
@@ -264,11 +264,17 @@ pub fn spectral_embedding_sparse(
     q = orthonormalize(q);
 
     for _ in 0..cfg.iters {
-        // Z = S * Q, computed by sparse mat-matrix multiply.
-        let z = apply_normalized_similarity_batch(adj, &d_inv_sqrt, q.view());
+        // Z = (I + S) * Q. The shift prevents high-frequency modes with
+        // negative eigenvalues of S from winning by magnitude.
+        let mut z = apply_normalized_similarity_batch(adj, &d_inv_sqrt, q.view());
+        z += &q;
         q = orthonormalize(z);
     }
 
+    // T = Q^T L Q = Q^T (Q - S Q), formed without materializing L.
+    let sq = apply_normalized_similarity_batch(adj, &d_inv_sqrt, q.view());
+    let projected = q.t().dot(&(&q - &sq));
+    q = rayleigh_ritz_rotate(q, &projected, cfg);
     let mut u = q.slice(ndarray::s![.., start..(start + k)]).to_owned();
 
     if cfg.row_normalize {
