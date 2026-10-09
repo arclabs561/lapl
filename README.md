@@ -17,7 +17,7 @@ ndarray = "0.16"
 ```
 
 ```rust
-use lapl::{adjacency_to_laplacian, normalized_laplacian, gaussian_similarity};
+use lapl::{adjacency_to_laplacian, normalized_laplacian};
 use ndarray::array;
 
 // Simple graph: 0 -- 1 -- 2
@@ -46,6 +46,20 @@ let lap_norm = normalized_laplacian(&adj);    // L_sym = I - D^{-1/2} A D^{-1/2}
 | `is_connected` | Check connectivity |
 | `laplacian_quadratic_form` | x^T L x |
 | `symmetric_eigenvalues` | Eigenvalues for symmetric matrices |
+
+## Limits
+
+- Everything is dense: adjacency matrices and Laplacians are `n x n`
+  `ndarray` arrays, so memory is `O(n^2)`.
+- `symmetric_eigenvalues` and the small-graph path of `spectral_embedding`
+  (`n <= jacobi_max_n`, default 64) use classical Jacobi rotations. Each
+  rotation scans all off-diagonal entries and convergence takes on the order
+  of `n^2` rotations, so cost grows roughly as `n^4`. The `max_sweeps` cap
+  counts rotations; when it is reached the result is returned unconverged.
+- Larger graphs in `spectral_embedding` use orthogonal iteration (approximate),
+  or with the `faer` feature a dense or Krylov-Schur eigensolver. The `sparse`
+  feature adds a matrix-free embedding (`sparse::spectral_embedding_sparse`)
+  over a CSR adjacency.
 
 ## The Laplacian Zoo
 

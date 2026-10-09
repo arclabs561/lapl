@@ -96,6 +96,11 @@
 use ndarray::{Array1, Array2, Axis};
 use thiserror::Error;
 
+// Compile and run the README's Rust examples as doctests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
+
 #[cfg(feature = "sparse")]
 pub mod sparse;
 
@@ -616,7 +621,10 @@ impl Default for SpectralEmbeddingConfig {
 ///
 /// Returns `(eigenvalues, eigenvectors)` where eigenvectors are columns.
 ///
-/// This is \(O(n^3)\) but deterministic and stable for small `n`.
+/// Classical Jacobi: each rotation scans every off-diagonal entry (`O(n^2)`), and
+/// convergence takes on the order of `n^2` rotations, so the cost grows roughly as
+/// `n^4`. Deterministic and stable for small `n`. `max_sweeps` caps the number of
+/// rotations; hitting the cap returns the current, unconverged estimate.
 fn jacobi_eigh(a: &Array2<f64>, tol: f64, max_sweeps: usize) -> (Vec<f64>, Array2<f64>) {
     let n = a.nrows();
     let mut d = a.to_owned();
@@ -718,6 +726,11 @@ pub(crate) fn rayleigh_ritz_rotate(
 /// than an embedding.
 ///
 /// The input must be square. The routine assumes the matrix is symmetric.
+///
+/// `max_sweeps` counts single Jacobi rotations, each of which scans all
+/// off-diagonal entries. Convergence needs on the order of `n^2` rotations, so
+/// the cost grows roughly as `n^4`; if the cap is reached first, the returned
+/// eigenvalues are not converged and no error is raised.
 pub fn symmetric_eigenvalues(a: &Array2<f64>, tol: f64, max_sweeps: usize) -> Result<Vec<f64>> {
     ensure_square(a)?;
     let (mut eigvals, _) = jacobi_eigh(a, tol, max_sweeps);
