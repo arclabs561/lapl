@@ -105,7 +105,7 @@ fn analyze_spectrum(label: &str, eigenvalues: &[f64]) {
     // Spacing ratio distribution summary
     if ratios.len() >= 5 {
         let mut sorted_ratios = ratios.clone();
-        sorted_ratios.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        sorted_ratios.sort_by(|a, b| a.total_cmp(b));
         let q1 = sorted_ratios[sorted_ratios.len() / 4];
         let median = sorted_ratios[sorted_ratios.len() / 2];
         let q3 = sorted_ratios[3 * sorted_ratios.len() / 4];
@@ -130,7 +130,7 @@ fn largest_low_end_gap(eigenvalues: &[f64], limit: usize) -> Option<(usize, f64)
 
     (0..upper - 1)
         .map(|idx| (idx, eigenvalues[idx + 1] - eigenvalues[idx]))
-        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+        .max_by(|(_, a), (_, b)| a.total_cmp(b))
 }
 
 fn random_points_2d(n: usize, seed: u64) -> Array2<f64> {
