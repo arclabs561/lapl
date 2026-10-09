@@ -243,21 +243,98 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// Directed Laplacian for reachability spectral embeddings.
 ///
-/// Based on the Hermitian Laplacian for directed graphs (Fan Chung, 2005).
+/// Chung's Laplacian for directed graphs (Fan Chung, 2005, "Laplacians and
+/// the Cheeger inequality for directed graphs"):
 /// L = I - (Φ^{1/2} P Φ^{-1/2} + Φ^{-1/2} P^T Φ^{1/2}) / 2
-/// where P is the transition matrix and Φ is the stationary distribution.
+/// where P = D_out^{-1} A is the transition matrix and Φ = diag(φ) holds its
+/// stationary distribution (φ P = φ, Σφ = 1).
+///
+/// L is symmetric positive semidefinite with a zero eigenvalue whose
+/// eigenvector is φ^{1/2}. On an undirected graph φ = d / vol, and L equals
+/// [`normalized_laplacian`].
+///
+/// # Errors
+///
+/// φ must be strictly positive, which requires a strongly connected graph:
+/// - [`Error::NotSquare`] if `adj` is not square
+/// - [`Error::NegativeEntries`] if any weight is negative
+/// - [`Error::ZeroDegree`] for a node with no outgoing edges
+/// - [`Error::Disconnected`] if the graph is not strongly connected
 pub fn directed_laplacian(adj: &Array2<f64>) -> Result<Array2<f64>> {
     let n = ensure_square(adj)?;
-    let p = transition_matrix(adj);
+    if n == 0 {
+        return Ok(Array2::eye(0));
+    }
+    if adj.iter().any(|&w| w < 0.0) {
+        return Err(Error::NegativeEntries);
+    }
+    let degrees = degree_vector(adj);
+    if let Some((idx, _)) = degrees.iter().enumerate().find(|(_, &d)| d <= 0.0) {
+        return Err(Error::ZeroDegree(idx));
+    }
+    if !(is_connected(adj) && is_connected(&adj.t().to_owned())) {
+        return Err(Error::Disconnected);
+    }
 
-    // For 2026, we use a simplified version assuming uniform stationary
-    // distribution for robustness, or we solve for Φ if requested.
-    // Here we implement the symmetrized transition part.
+    let p = transition_matrix(adj);
+    let phi_sqrt = stationary_distribution(&p).mapv(f64::sqrt);
+
     let mut l_dir = Array2::eye(n);
-    let p_sym = (&p + &p.t()) * 0.5;
-    l_dir -= &p_sym;
+    for i in 0..n {
+        for j in 0..n {
+            // (Φ^{1/2} P Φ^{-1/2})_ij + (Φ^{-1/2} P^T Φ^{1/2})_ij
+            let fwd = phi_sqrt[i] * p[[i, j]] / phi_sqrt[j];
+            let bwd = phi_sqrt[j] * p[[j, i]] / phi_sqrt[i];
+            l_dir[[i, j]] -= 0.5 * (fwd + bwd);
+        }
+    }
 
     Ok(l_dir)
+}
+
+/// Stationary distribution φ of an irreducible row-stochastic `p`.
+///
+/// Solves (I - P)^T φ = 0 with one equation replaced by Σφ = 1, by Gaussian
+/// elimination with partial pivoting. Irreducibility makes the system
+/// nonsingular, and φ > 0 (Perron-Frobenius).
+fn stationary_distribution(p: &Array2<f64>) -> Array1<f64> {
+    let n = p.nrows();
+    let mut m = Array2::<f64>::zeros((n, n + 1));
+    for i in 0..n {
+        for j in 0..n {
+            m[[i, j]] = if i == j { 1.0 } else { 0.0 } - p[[j, i]];
+        }
+    }
+    for j in 0..=n {
+        m[[n - 1, j]] = 1.0;
+    }
+    for col in 0..n {
+        let pivot = (col..n)
+            .max_by(|&a, &b| m[[a, col]].abs().total_cmp(&m[[b, col]].abs()))
+            .unwrap_or(col);
+        if pivot != col {
+            for j in 0..=n {
+                m.swap([col, j], [pivot, j]);
+            }
+        }
+        for row in (col + 1)..n {
+            let f = m[[row, col]] / m[[col, col]];
+            if f != 0.0 {
+                for j in col..=n {
+                    m[[row, j]] -= f * m[[col, j]];
+                }
+            }
+        }
+    }
+    let mut phi = Array1::<f64>::zeros(n);
+    for i in (0..n).rev() {
+        let mut s = m[[i, n]];
+        for j in (i + 1)..n {
+            s -= m[[i, j]] * phi[j];
+        }
+        phi[i] = s / m[[i, i]];
+    }
+    phi
 }
 
 fn ensure_square(a: &Array2<f64>) -> Result<usize> {

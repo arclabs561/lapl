@@ -23,8 +23,8 @@
 //!    connectivity `λ_2` and confirm it matches the closed form.
 
 use lapl::{
-    adjacency_to_laplacian, laplacian_quadratic_form, normalized_laplacian, spectral_embedding,
-    SpectralEmbeddingConfig,
+    adjacency_to_laplacian, directed_laplacian, laplacian_quadratic_form, normalized_laplacian,
+    spectral_embedding, symmetric_eigenvalues, Error, SpectralEmbeddingConfig,
 };
 use ndarray::{array, Array1, Array2};
 
@@ -242,4 +242,87 @@ fn connected_graph_has_positive_algebraic_connectivity() {
         "K3 algebraic connectivity {lambda2} != closed-form 3/2"
     );
     assert!(lambda2 > 1e-6, "connected graph must have λ_2 > 0");
+}
+
+/// Chung (2005), "Laplacians and the Cheeger inequality for directed graphs":
+/// `L = I − (Φ^{1/2} P Φ^{−1/2} + Φ^{−1/2} Pᵀ Φ^{1/2}) / 2` with Φ the
+/// stationary distribution of `P = D_out^{−1} A`. It is PSD with kernel
+/// spanned by `Φ^{1/2}·1`.
+///
+/// Graph 0→1, 1→2, 2→0, 2→1 has Φ = (1/5, 2/5, 2/5) (solve ΦP = Φ by hand:
+/// φ0 = φ2/2, φ1 = φ0 + φ2/2, φ2 = φ1). Hand-derived entries:
+/// `L01 = −½·√(φ0/φ1)·P01 = −√2/4`, `L02 = −½·√(φ2/φ0)·P20 = −√2/4`,
+/// `L12 = −½·(√(φ1/φ2)·P12 + √(φ2/φ1)·P21) = −3/4`. Spectrum {0, 5/4, 7/4}
+/// (numpy `eigvalsh` on the same matrix).
+#[test]
+fn directed_laplacian_matches_chung_on_directed_triangle() {
+    let adj = array![[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 1.0, 0.0]];
+    let lap = directed_laplacian(&adj).unwrap();
+    let s = 2.0_f64.sqrt() / 4.0;
+    let want = array![[1.0, -s, -s], [-s, 1.0, -0.75], [-s, -0.75, 1.0]];
+    for (got, w) in lap.iter().zip(want.iter()) {
+        assert!(
+            (got - w).abs() < 1e-10,
+            "Chung L\n{lap}\n!= hand-derived\n{want}"
+        );
+    }
+
+    let kernel = array![0.2_f64.sqrt(), 0.4_f64.sqrt(), 0.4_f64.sqrt()];
+    assert!(eigenpair_residual(&lap, &kernel, 0.0) < 1e-10);
+
+    let ev = symmetric_eigenvalues(&lap, 1e-12, 100).unwrap();
+    for (got, w) in ev.iter().zip([0.0, 1.25, 1.75]) {
+        assert!(
+            (got - w).abs() < 1e-8,
+            "Chung spectrum {ev:?} != [0, 5/4, 7/4]"
+        );
+    }
+}
+
+/// On an undirected graph Φ = d / vol, and Chung's Laplacian reduces to the
+/// symmetric normalized Laplacian. The 4-node star has spectrum {0, 1, 1, 2}.
+#[test]
+fn directed_laplacian_reduces_to_normalized_on_undirected_star() {
+    let adj = array![
+        [0.0, 1.0, 1.0, 1.0],
+        [1.0, 0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0, 0.0]
+    ];
+    let lap = directed_laplacian(&adj).unwrap();
+    let l_sym = normalized_laplacian(&adj);
+    for (got, w) in lap.iter().zip(l_sym.iter()) {
+        assert!((got - w).abs() < 1e-10, "Chung L\n{lap}\n!= L_sym\n{l_sym}");
+    }
+    let ev = symmetric_eigenvalues(&lap, 1e-12, 100).unwrap();
+    for (got, w) in ev.iter().zip([0.0, 1.0, 1.0, 2.0]) {
+        assert!(
+            (got - w).abs() < 1e-8,
+            "star spectrum {ev:?} != [0, 1, 1, 2]"
+        );
+    }
+}
+
+/// Φ exists and is positive only for a strongly connected graph with no
+/// dangling (zero out-degree) node; otherwise `Φ^{−1/2}` is undefined.
+#[test]
+fn directed_laplacian_rejects_graphs_without_positive_stationary_distribution() {
+    // 0→1→2 with 2 dangling.
+    let dangling = array![[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 0.0]];
+    assert!(matches!(
+        directed_laplacian(&dangling),
+        Err(Error::ZeroDegree(2))
+    ));
+    // 0⇄1 and 2⇄3 with a one-way bridge 1→2: every node has out-degree, but
+    // {0, 1} is transient, so Φ vanishes there.
+    let one_way = array![
+        [0.0, 1.0, 0.0, 0.0],
+        [1.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+        [0.0, 0.0, 1.0, 0.0]
+    ];
+    assert!(matches!(
+        directed_laplacian(&one_way),
+        Err(Error::Disconnected)
+    ));
 }
