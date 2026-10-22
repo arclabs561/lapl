@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Documentation
+
+- State the symmetry and finite, nonnegative weight preconditions for dense
+  spectral methods, and clarify that `normalized_laplacian_checked` checks
+  only row degrees. Runtime behavior is unchanged.
+- Correct the documented eigenvector conversion from the symmetric normalized
+  Laplacian to the random-walk Laplacian to use `D^{-1/2}`.
+
 ## [0.2.0] - 2026-07-05
 
 ### Added
