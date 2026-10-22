@@ -380,6 +380,10 @@ pub fn degree_vector(adj: &Array2<f64>) -> Array1<f64> {
 
 /// Unnormalized Laplacian: L = D - A
 ///
+/// The spectral properties below assume a square, symmetric adjacency matrix
+/// with finite, nonnegative weights (an undirected graph). These are caller
+/// preconditions and are not validated.
+///
 /// # Properties
 ///
 /// - Symmetric positive semidefinite
@@ -405,12 +409,18 @@ pub fn adjacency_to_laplacian(adj: &Array2<f64>) -> Array2<f64> {
 
 /// Symmetric normalized Laplacian: L_sym = I - D^{-1/2} A D^{-1/2}
 ///
-/// Also written as: D^{-1/2} L D^{-1/2}
+/// Equals D^{-1/2} L D^{-1/2} on nodes with positive degree; isolated nodes
+/// instead retain diagonal entry 1 under the convention below.
+///
+/// Requires a square, symmetric adjacency matrix with finite, nonnegative
+/// weights. These caller preconditions are not validated; signed graphs are
+/// outside this operator's supported domain. For a symmetric spectral operator
+/// on a directed graph, use [`directed_laplacian`].
 ///
 /// # Properties
 ///
 /// - Eigenvalues in [0, 2]
-/// - λ = 2 iff graph is bipartite
+/// - λ = 2 iff at least one connected component containing an edge is bipartite
 /// - Preferred for spectral clustering (scale-invariant)
 ///
 /// # Zero-degree nodes
@@ -443,6 +453,10 @@ pub fn normalized_laplacian(adj: &Array2<f64>) -> Array2<f64> {
 }
 
 /// Symmetric normalized Laplacian, but rejects isolated nodes.
+///
+/// This checks for nonpositive row degree only. It does not validate shape,
+/// symmetry, finiteness or individual edge weights; the same adjacency
+/// preconditions as [`normalized_laplacian`] apply.
 pub fn normalized_laplacian_checked(adj: &Array2<f64>) -> Result<Array2<f64>> {
     let degrees = degree_vector(adj);
     if let Some((idx, _)) = degrees.iter().enumerate().find(|(_, &d)| d <= 0.0) {
@@ -455,10 +469,18 @@ pub fn normalized_laplacian_checked(adj: &Array2<f64>) -> Result<Array2<f64>> {
 ///
 /// The matrix P = D^{-1} A is the random walk transition matrix.
 ///
+/// Requires a square adjacency matrix with finite, nonnegative weights. The
+/// spectral properties below additionally assume symmetry (an undirected
+/// graph). These caller preconditions are not validated.
+///
 /// # Properties
 ///
 /// - Same eigenvalues as L_sym
-/// - Eigenvectors of L_rw = D^{1/2} × (eigenvectors of L_sym)
+/// - On nodes with positive degree, eigenvectors of L_rw = D^{-1/2} ×
+///   (eigenvectors of L_sym)
+///
+/// Isolated nodes retain diagonal entry 1 and separate coordinate-basis
+/// eigenvectors with eigenvalue 1; the D^{-1/2} conversion does not apply there.
 pub fn random_walk_laplacian(adj: &Array2<f64>) -> Array2<f64> {
     let n = adj.nrows();
     let degrees = degree_vector(adj);
@@ -739,6 +761,11 @@ pub fn symmetric_eigenvalues(a: &Array2<f64>, tol: f64, max_sweeps: usize) -> Re
 }
 
 /// Approximate spectral embedding: the k eigenvectors after the trivial constant one.
+///
+/// Requires a square, symmetric adjacency matrix with finite, nonnegative
+/// weights. Shape is checked, but symmetry and the weight domain are caller
+/// preconditions and are not validated. Signed and directed adjacencies are
+/// outside this embedding's supported domain.
 ///
 /// This uses **orthogonal iteration** on the positive-semidefinite shift
 /// \(A = 2I - L_{sym}\), followed by a Rayleigh--Ritz projection to order the
