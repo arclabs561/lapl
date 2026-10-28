@@ -55,7 +55,7 @@ let lap_norm = normalized_laplacian(&adj);    // L_sym = I - D^{-1/2} A D^{-1/2}
   `normalized_laplacian_checked` checks only for nonpositive row degrees;
   it does not validate the other adjacency preconditions. Use
   `directed_laplacian` for Chung's symmetric operator on directed graphs.
-- Everything is dense: adjacency matrices and Laplacians are `n x n`
+- The default API is dense: adjacency matrices and Laplacians are `n x n`
   `ndarray` arrays, so memory is `O(n^2)`.
 - `symmetric_eigenvalues` and the small-graph path of `spectral_embedding`
   (`n <= jacobi_max_n`, default 64) use classical Jacobi rotations. Each
@@ -67,7 +67,7 @@ let lap_norm = normalized_laplacian(&adj);    // L_sym = I - D^{-1/2} A D^{-1/2}
   feature adds a matrix-free embedding (`sparse::spectral_embedding_sparse`)
   over a CSR adjacency.
 
-## The Laplacian Zoo
+## Laplacian variants
 
 - **Unnormalized L = D - A**: Simple but scale-dependent
 - **Normalized L_sym**: Eigenvalues in [0, 2], used for spectral clustering
