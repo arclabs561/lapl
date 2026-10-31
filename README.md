@@ -62,10 +62,14 @@ let lap_norm = normalized_laplacian(&adj);    // L_sym = I - D^{-1/2} A D^{-1/2}
   rotation scans all off-diagonal entries and convergence takes on the order
   of `n^2` rotations, so cost grows roughly as `n^4`. The `max_sweeps` cap
   counts rotations; when it is reached the result is returned unconverged.
-- Larger graphs in `spectral_embedding` use orthogonal iteration (approximate),
-  or with the `faer` feature a dense or Krylov-Schur eigensolver. The `sparse`
-  feature adds a matrix-free embedding (`sparse::spectral_embedding_sparse`)
-  over a CSR adjacency.
+- Larger graphs in `spectral_embedding` use a block Krylov eigensolver with
+  thick restarts (with the `faer` feature, a dense eigendecomposition up to
+  `n = 512`). The `sparse` feature adds a matrix-free embedding
+  (`sparse::spectral_embedding_sparse`) over a CSR adjacency that uses the
+  same solver. Every path checks the residual `||L u - theta u||` of each
+  returned eigenvector against `jacobi_tol * sqrt(n)` and returns an error
+  when it is not met; the `*_with_diagnostics` variants return the residuals
+  and a `converged` flag instead.
 
 ## Laplacian variants
 

@@ -46,8 +46,9 @@ fn bench_spectral_scaling(c: &mut Criterion) {
     for n in [64usize, 128, 256, 512, 1024] {
         let k = 4;
         let cfg = SpectralEmbeddingConfig {
-            iters: 20,        // Keep iterations constant for fair comparison
-            jacobi_max_n: 64, // Beyond this, dense uses Faer or OrthIter
+            // Beyond this, dense uses faer or the block Krylov solver, which
+            // iterates to the residual tolerance.
+            jacobi_max_n: 64,
             ..Default::default()
         };
 

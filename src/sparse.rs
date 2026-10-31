@@ -2,13 +2,16 @@
 //!
 //! This module is intentionally small:
 //! - a minimal CSR adjacency representation (undirected, weighted)
-//! - a matrix-free spectral embedding via orthogonal iteration on the shifted
-//!   operator $I + D^{-1/2} A D^{-1/2}$, avoiding dense $n \times n$ matrices.
+//! - a matrix-free spectral embedding via a block Krylov eigensolver on
+//!   $L_{sym} = I - D^{-1/2} A D^{-1/2}$, avoiding dense $n \times n$ matrices.
 //!
 //! The intent is to unblock scaling beyond dense adjacency without committing to
 //! a full sparse linear algebra dependency stack.
 
-use crate::{rayleigh_ritz_rotate, Error, Result, SpectralEmbeddingConfig};
+use crate::{
+    residual_tolerance, row_normalize, smallest_eigenpairs, EmbeddingDiagnostics, Error, Result,
+    SpectralEmbeddingConfig,
+};
 use ndarray::{Array2, ArrayView2};
 
 #[cfg(feature = "parallel")]
@@ -142,23 +145,6 @@ impl CsrAdjacency {
     }
 }
 
-fn orthonormalize(mut x: Array2<f64>) -> Array2<f64> {
-    let r = x.ncols();
-    for j in 0..r {
-        for i in 0..j {
-            let dot = x.column(i).dot(&x.column(j));
-            let col_i = x.column(i).to_owned();
-            let mut col_j = x.column_mut(j);
-            col_j.scaled_add(-dot, &col_i);
-        }
-        let norm = x.column(j).dot(&x.column(j)).sqrt();
-        if norm > 0.0 {
-            x.column_mut(j).mapv_inplace(|v| v / norm);
-        }
-    }
-    x
-}
-
 fn apply_normalized_similarity_batch(
     adj: &CsrAdjacency,
     d_inv_sqrt: &[f64],
@@ -219,23 +205,40 @@ fn apply_normalized_similarity_batch(
 
 /// Matrix-free spectral embedding for a sparse adjacency.
 ///
-/// We avoid forming the dense normalized Laplacian. Instead, we perform
-/// orthogonal iteration on the positive-semidefinite shift
-/// \(I + S = 2I - L_{sym}\), followed by a Rayleigh--Ritz projection that
-/// orders the approximate eigenvectors of \(L_{sym} = I - S\).
+/// We avoid forming the dense normalized Laplacian. The eigenvectors of
+/// \(L_{sym} = I - S\), \(S = D^{-1/2} A D^{-1/2}\), come from a block
+/// Krylov solver with thick restarts (at most `cfg.iters` restart cycles)
+/// that stops once every residual `||L u - theta u||` is within
+/// `cfg.jacobi_tol * sqrt(n)`.
+///
+/// # Errors
+///
+/// [`Error::InvalidEmbeddingDim`] if `n <= k` (plus one when skipping the
+/// trivial eigenvector), and [`Error::Backend`] if the eigenvectors did not
+/// converge. Use [`spectral_embedding_sparse_with_diagnostics`] to get the
+/// unconverged embedding together with its residuals instead.
 pub fn spectral_embedding_sparse(
     adj: &CsrAdjacency,
     k: usize,
     cfg: &SpectralEmbeddingConfig,
 ) -> Result<Array2<f64>> {
+    let (u, diagnostics) = spectral_embedding_sparse_with_diagnostics(adj, k, cfg)?;
+    diagnostics.into_result(u)
+}
+
+/// [`spectral_embedding_sparse`] that returns convergence diagnostics instead
+/// of failing when the eigensolver does not reach its tolerance.
+pub fn spectral_embedding_sparse_with_diagnostics(
+    adj: &CsrAdjacency,
+    k: usize,
+    cfg: &SpectralEmbeddingConfig,
+) -> Result<(Array2<f64>, EmbeddingDiagnostics)> {
     let n = adj.n();
-    if k == 0 {
-        return Ok(Array2::zeros((n, 0)));
-    }
+    let tol = residual_tolerance(cfg, n);
 
     // Mirror the dense API’s "skip_first" handling.
     let start = if cfg.skip_first { 1 } else { 0 };
-    if n <= k + start {
+    if k > 0 && n <= k + start {
         return Err(Error::InvalidEmbeddingDim { k, n });
     }
 
@@ -249,59 +252,25 @@ pub fn spectral_embedding_sparse(
         }
     }
 
-    // We want r = k + start eigenvectors from S, then slice away the first if requested.
-    let r = k + start;
-    let mut q = Array2::<f64>::zeros((n, r));
-    for i in 0..n {
-        for j in 0..r {
-            // Deterministic init, same spirit as the dense orthogonal-iteration path.
-            q[[i, j]] = ((((i + 1) * 1315423911usize) ^ ((j + 1) * 2654435761usize)) % 10_000)
-                as f64
-                / 10_000.0
-                - 0.5;
-        }
-    }
-    q = orthonormalize(q);
-
-    for _ in 0..cfg.iters {
-        // Z = (I + S) * Q. The shift prevents high-frequency modes with
-        // negative eigenvalues of S from winning by magnitude.
-        let mut z = apply_normalized_similarity_batch(adj, &d_inv_sqrt, q.view());
-        z += &q;
-        q = orthonormalize(z);
+    // L X = X - S X, formed without materializing L.
+    let apply =
+        |x: &Array2<f64>| x - &apply_normalized_similarity_batch(adj, &d_inv_sqrt, x.view());
+    if k == 0 {
+        let u = Array2::zeros((n, 0));
+        let diagnostics = EmbeddingDiagnostics::from_columns(&u, apply, tol, 0);
+        return Ok((u, diagnostics));
     }
 
-    // T = Q^T L Q = Q^T (Q - S Q), formed without materializing L.
-    let sq = apply_normalized_similarity_batch(adj, &d_inv_sqrt, q.view());
-    let projected = q.t().dot(&(&q - &sq));
-    q = rayleigh_ritz_rotate(q, &projected, cfg);
-    let mut u = q.slice(ndarray::s![.., start..(start + k)]).to_owned();
+    let eig = smallest_eigenpairs(n, k + start, apply, tol, cfg.iters);
+    let mut u = eig
+        .vectors
+        .slice(ndarray::s![.., start..(start + k)])
+        .to_owned();
+    let diagnostics = EmbeddingDiagnostics::from_columns(&u, apply, tol, eig.restarts);
 
     if cfg.row_normalize {
-        #[cfg(feature = "parallel")]
-        {
-            use ndarray::parallel::prelude::*;
-            u.axis_iter_mut(ndarray::Axis(0))
-                .into_par_iter()
-                .for_each(|mut row| {
-                    let norm_sq: f64 = row.iter().map(|x| x * x).sum();
-                    let norm = norm_sq.sqrt();
-                    if norm > 0.0 {
-                        row.mapv_inplace(|x| x / norm);
-                    }
-                });
-        }
-        #[cfg(not(feature = "parallel"))]
-        {
-            for mut row in u.rows_mut() {
-                let norm_sq: f64 = row.iter().map(|x| x * x).sum();
-                let norm = norm_sq.sqrt();
-                if norm > 0.0 {
-                    row.mapv_inplace(|x| x / norm);
-                }
-            }
-        }
+        row_normalize(&mut u);
     }
 
-    Ok(u)
+    Ok((u, diagnostics))
 }
