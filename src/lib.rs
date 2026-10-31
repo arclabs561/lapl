@@ -81,9 +81,10 @@
 //! 1. **Disconnected graph**: Zero eigenvalue multiplicity = number of components.
 //! 2. **Zero degree nodes**: Normalized Laplacian undefined. Remove isolated nodes.
 //! 3. **Numerical precision**: Very small/large edge weights cause instability.
-//! 4. **Eigendecomposition**: this crate includes a pragmatic, dependency-free
-//!    approximate spectral embedding (`spectral_embedding`) for dense graphs.
-//!    For large graphs, you still want a sparse representation + a real eigensolver.
+//! 4. **Eigendecomposition**: `spectral_embedding` uses a dependency-free
+//!    iterative eigensolver above `jacobi_max_n` and fails with an error when
+//!    its residuals miss the tolerance; graphs with tiny spectral gaps (long
+//!    paths) need more restarts (`SpectralEmbeddingConfig::iters`).
 //! 5. **Scaling**: O(n²) storage for dense adjacency. Use sparse formats for large graphs.
 //!
 //! ## References
@@ -198,11 +199,7 @@ where
 }
 
 #[cfg(feature = "faer")]
-use faer::{
-    dyn_stack::{MemBuffer, MemStack},
-    matrix_free::eigen::{partial_eigen_scratch, partial_self_adjoint_eigen, PartialEigenParams},
-    Col, Mat, Par, Side,
-};
+use faer::{Mat, Side};
 
 /// Errors returned by fallible lapl functions.
 #[derive(Debug, Error)]
@@ -600,12 +597,15 @@ pub fn epsilon_graph(distances: &Array2<f64>, epsilon: f64) -> Array2<f64> {
     distances.mapv(|d| if d < epsilon && d > 0.0 { 1.0 } else { 0.0 })
 }
 
-/// Configuration for approximate spectral embedding.
+/// Configuration for spectral embedding.
 #[derive(Debug, Clone)]
 pub struct SpectralEmbeddingConfig {
-    /// Number of orthogonal-iteration steps.
+    /// Maximum number of restart cycles of the iterative eigensolver used
+    /// above `jacobi_max_n` (and always by the sparse embedding).
     ///
-    /// Larger means better convergence but higher cost.
+    /// The solver stops earlier once every residual is within
+    /// `jacobi_tol * sqrt(n)`; reaching this cap first is reported as
+    /// non-convergence.
     pub iters: usize,
     /// If n ≤ this threshold, use a deterministic Jacobi eigensolver on L_sym.
     ///
@@ -613,6 +613,9 @@ pub struct SpectralEmbeddingConfig {
     /// surprises from iterative methods.
     pub jacobi_max_n: usize,
     /// Jacobi stopping tolerance on the maximum off-diagonal magnitude.
+    ///
+    /// Also sets the residual tolerance `jacobi_tol * sqrt(n)` that every
+    /// embedding path is checked against (floored at `1e-12 * sqrt(n)`).
     pub jacobi_tol: f64,
     /// Jacobi maximum number of sweeps (each sweep eliminates one off-diagonal element).
     pub jacobi_max_sweeps: usize,
@@ -629,7 +632,7 @@ pub struct SpectralEmbeddingConfig {
 impl Default for SpectralEmbeddingConfig {
     fn default() -> Self {
         Self {
-            iters: 50,
+            iters: 300,
             jacobi_max_n: 64,
             jacobi_tol: 1e-10,
             jacobi_max_sweeps: 50_000,
@@ -718,26 +721,336 @@ fn jacobi_eigh(a: &Array2<f64>, tol: f64, max_sweeps: usize) -> (Vec<f64>, Array
     (eigvals, v)
 }
 
-/// Rotate an orthonormal basis into ascending Ritz-vector order.
+/// Cyclic Jacobi eigensolver for the small projected matrices of the
+/// iterative solver. Each sweep visits every off-diagonal pair once, so a
+/// sweep costs `O(n^3)` and convergence takes a handful of sweeps.
 ///
-/// `projected` is the representation of the normalized Laplacian in `q`.
-#[cfg(any(not(feature = "faer"), feature = "sparse"))]
-pub(crate) fn rayleigh_ritz_rotate(
-    q: Array2<f64>,
-    projected: &Array2<f64>,
-    cfg: &SpectralEmbeddingConfig,
-) -> Array2<f64> {
-    let (eigvals, eigvecs) = jacobi_eigh(projected, cfg.jacobi_tol, cfg.jacobi_max_sweeps);
-    let mut order: Vec<usize> = (0..eigvals.len()).collect();
-    order.sort_by(|&i, &j| eigvals[i].total_cmp(&eigvals[j]));
-
-    let mut rotation = Array2::<f64>::zeros(eigvecs.dim());
-    for (out_col, &eig_idx) in order.iter().enumerate() {
-        rotation
-            .column_mut(out_col)
-            .assign(&eigvecs.column(eig_idx));
+/// Returns eigenpairs sorted by ascending eigenvalue.
+fn cyclic_jacobi_eigh(a: &Array2<f64>) -> (Vec<f64>, Array2<f64>) {
+    let n = a.nrows();
+    // Plain row-major buffers: this runs once per restart of the iterative
+    // solver, so it avoids per-element ndarray indexing.
+    let mut d: Vec<f64> = a.iter().copied().collect();
+    let mut v = vec![0.0f64; n * n];
+    for i in 0..n {
+        v[i * n + i] = 1.0;
     }
-    q.dot(&rotation)
+
+    for _ in 0..100 {
+        // Entries below eps * ||A||_F are left alone: rotating them cannot
+        // change any eigenpair beyond rounding, and the sweep loop ends once
+        // a full sweep finds nothing larger.
+        let frob = d.iter().map(|x| x * x).sum::<f64>().sqrt();
+        let threshold = f64::EPSILON * frob;
+        let mut rotated = false;
+        for p in 0..n {
+            for q in (p + 1)..n {
+                let apq = d[p * n + q];
+                if apq.abs() <= threshold {
+                    continue;
+                }
+                rotated = true;
+                let app = d[p * n + p];
+                let aqq = d[q * n + q];
+                let tau = (aqq - app) / (2.0 * apq);
+                let t = if tau >= 0.0 {
+                    1.0 / (tau + (1.0 + tau * tau).sqrt())
+                } else {
+                    -1.0 / (-tau + (1.0 + tau * tau).sqrt())
+                };
+                let c = 1.0 / (1.0 + t * t).sqrt();
+                let s = t * c;
+
+                // d <- J^T d J, using symmetry: update rows p and q, then
+                // mirror them into columns p and q.
+                for i in 0..n {
+                    let dpi = d[p * n + i];
+                    let dqi = d[q * n + i];
+                    d[p * n + i] = c * dpi - s * dqi;
+                    d[q * n + i] = s * dpi + c * dqi;
+                }
+                for i in 0..n {
+                    d[i * n + p] = d[p * n + i];
+                    d[i * n + q] = d[q * n + i];
+                }
+                d[p * n + p] = app - t * apq;
+                d[q * n + q] = aqq + t * apq;
+                d[p * n + q] = 0.0;
+                d[q * n + p] = 0.0;
+
+                // v <- v J, stored transposed (row j holds eigenvector j).
+                for i in 0..n {
+                    let vpi = v[p * n + i];
+                    let vqi = v[q * n + i];
+                    v[p * n + i] = c * vpi - s * vqi;
+                    v[q * n + i] = s * vpi + c * vqi;
+                }
+            }
+        }
+        if !rotated {
+            break;
+        }
+    }
+
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&i, &j| d[i * n + i].total_cmp(&d[j * n + j]));
+    let vals = order.iter().map(|&i| d[i * n + i]).collect();
+    let mut vecs = Array2::<f64>::zeros((n, n));
+    for (out, &j) in order.iter().enumerate() {
+        for i in 0..n {
+            vecs[[i, out]] = v[j * n + i];
+        }
+    }
+    (vals, vecs)
+}
+
+/// Deterministic pseudo-random start columns (no RNG dependency).
+fn hashed_block(n: usize, cols: usize, seed: usize) -> Array2<f64> {
+    let mut q = Array2::<f64>::zeros((n, cols));
+    for i in 0..n {
+        for j in 0..cols {
+            let h = ((i + 1).wrapping_mul(1315423911usize))
+                ^ ((j + seed + 1).wrapping_mul(2654435761usize));
+            q[[i, j]] = (h % 10_000) as f64 / 10_000.0 - 0.5;
+        }
+    }
+    q
+}
+
+/// Orthogonalize `w` against the orthonormal columns of `basis` (twice, for
+/// numerical safety), then orthonormalize `w` itself, dropping columns that
+/// are numerically dependent.
+fn orthonormalize_against(basis: &Array2<f64>, mut w: Array2<f64>) -> Array2<f64> {
+    let norms_before: Vec<f64> = w.columns().into_iter().map(|c| c.dot(&c).sqrt()).collect();
+    if basis.ncols() > 0 {
+        for _ in 0..2 {
+            let coeffs = basis.t().dot(&w);
+            w -= &basis.dot(&coeffs);
+        }
+    }
+    let mut kept: Vec<Array1<f64>> = Vec::with_capacity(w.ncols());
+    for (j, col) in w.columns().into_iter().enumerate() {
+        let mut x = col.to_owned();
+        for _ in 0..2 {
+            for prev in &kept {
+                let dot = prev.dot(&x);
+                x.scaled_add(-dot, prev);
+            }
+        }
+        let norm = x.dot(&x).sqrt();
+        if norm > 1e-10 * norms_before[j] && norm > f64::MIN_POSITIVE {
+            x /= norm;
+            kept.push(x);
+        }
+    }
+    let mut out = Array2::<f64>::zeros((w.nrows(), kept.len()));
+    for (j, x) in kept.iter().enumerate() {
+        out.column_mut(j).assign(x);
+    }
+    out
+}
+
+/// Result of [`smallest_eigenpairs`].
+pub(crate) struct IterativeEigen {
+    /// Ritz vectors, one per column, for the smallest eigenvalues.
+    pub(crate) vectors: Array2<f64>,
+    /// Number of restart cycles used.
+    pub(crate) restarts: usize,
+}
+
+/// Smallest `r` eigenpairs of a symmetric operator via block Krylov
+/// expansion with full reorthogonalization and thick restarts.
+///
+/// `apply` maps a block of column vectors `X` to `L X`. Iteration stops when
+/// every wanted Ritz pair has residual `||L x - theta x|| <= tol`, or after
+/// `max_restarts` restart cycles; the caller checks residuals afterwards.
+///
+/// The start block has `r` columns, so eigenvalues with multiplicity up to
+/// `r` (for example the zero eigenvalue of a graph with several components)
+/// are found, which a single start vector cannot do.
+pub(crate) fn smallest_eigenpairs<F>(
+    n: usize,
+    r: usize,
+    apply: F,
+    tol: f64,
+    max_restarts: usize,
+) -> IterativeEigen
+where
+    F: Fn(&Array2<f64>) -> Array2<f64>,
+{
+    let max_dim = n.min((10 * r).max(64));
+    let keep_dim = (max_dim / 2).max(r);
+
+    let mut v = orthonormalize_against(&Array2::zeros((n, 0)), hashed_block(n, r, 0));
+    let mut lv = apply(&v);
+    let mut last = 0..v.ncols();
+    let mut fresh_seed = r;
+    let mut restarts = 0;
+
+    loop {
+        // Expand the basis with Krylov blocks L * (last block).
+        while v.ncols() < max_dim {
+            let next = lv.slice(ndarray::s![.., last.clone()]).to_owned();
+            let mut w = orthonormalize_against(&v, next);
+            if w.ncols() == 0 {
+                // Invariant subspace: continue from fresh directions so the
+                // search is not confined to the start vectors' span.
+                w = orthonormalize_against(&v, hashed_block(n, r, fresh_seed));
+                fresh_seed += r;
+                if w.ncols() == 0 {
+                    break;
+                }
+            }
+            let room = max_dim - v.ncols();
+            if w.ncols() > room {
+                w = w.slice(ndarray::s![.., 0..room]).to_owned();
+            }
+            let lw = apply(&w);
+            let start = v.ncols();
+            v = ndarray::concatenate(Axis(1), &[v.view(), w.view()]).expect("same rows");
+            lv = ndarray::concatenate(Axis(1), &[lv.view(), lw.view()]).expect("same rows");
+            last = start..v.ncols();
+        }
+
+        // Rayleigh--Ritz on the current basis.
+        let mut h = v.t().dot(&lv);
+        let ht = h.t().to_owned();
+        h = (&h + &ht) * 0.5;
+        let (theta, y) = cyclic_jacobi_eigh(&h);
+
+        let x = v.dot(&y.slice(ndarray::s![.., 0..r]));
+        let lx = apply(&x);
+        let mut resid = lx.clone();
+        let mut converged = true;
+        for (j, (mut col, &th)) in resid.columns_mut().into_iter().zip(&theta).enumerate() {
+            col.scaled_add(-th, &x.column(j));
+            if col.dot(&col).sqrt() > tol {
+                converged = false;
+            }
+        }
+
+        if converged || restarts >= max_restarts || v.ncols() >= n {
+            return IterativeEigen {
+                vectors: x,
+                restarts,
+            };
+        }
+
+        // Thick restart: keep the best Ritz vectors, then continue the
+        // Krylov expansion from the residuals of the wanted ones.
+        restarts += 1;
+        let keep = keep_dim.min(v.ncols());
+        let yk = y.slice(ndarray::s![.., 0..keep]).to_owned();
+        v = v.dot(&yk);
+        lv = lv.dot(&yk);
+        // Recompute the wanted columns exactly to limit drift in `lv`.
+        lv.slice_mut(ndarray::s![.., 0..r]).assign(&lx);
+        let w = orthonormalize_against(&v, resid);
+        let lw = apply(&w);
+        let start = v.ncols();
+        v = ndarray::concatenate(Axis(1), &[v.view(), w.view()]).expect("same rows");
+        lv = ndarray::concatenate(Axis(1), &[lv.view(), lw.view()]).expect("same rows");
+        last = start..v.ncols();
+    }
+}
+
+/// Residual tolerance used to decide convergence of an embedding:
+/// `||L u - theta u|| <= jacobi_tol * sqrt(n)` for each unit column `u`.
+///
+/// The `sqrt(n)` factor matches what the Jacobi path guarantees when its
+/// largest off-diagonal entry falls below `jacobi_tol`.
+pub(crate) fn residual_tolerance(cfg: &SpectralEmbeddingConfig, n: usize) -> f64 {
+    cfg.jacobi_tol.max(1e-12) * (n as f64).sqrt()
+}
+
+/// Convergence report for a spectral embedding.
+///
+/// Returned by [`spectral_embedding_with_diagnostics`] (and the sparse
+/// variant). Residuals are computed from the returned columns before row
+/// normalization, independently of the solver that produced them.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct EmbeddingDiagnostics {
+    /// Rayleigh quotient `u' L u` of each returned (unit) column: the
+    /// eigenvalue estimate of the normalized Laplacian.
+    pub eigenvalues: Vec<f64>,
+    /// Residual `||L u - theta u||` of each returned column.
+    pub residuals: Vec<f64>,
+    /// Tolerance the residuals were checked against.
+    pub tolerance: f64,
+    /// Whether every residual is within `tolerance`.
+    pub converged: bool,
+    /// Restart cycles used by the iterative solver (0 for direct solvers).
+    pub restarts: usize,
+}
+
+impl EmbeddingDiagnostics {
+    pub(crate) fn from_columns<F>(
+        u: &Array2<f64>,
+        apply: F,
+        tolerance: f64,
+        restarts: usize,
+    ) -> Self
+    where
+        F: Fn(&Array2<f64>) -> Array2<f64>,
+    {
+        let mut unit = u.to_owned();
+        for mut col in unit.columns_mut() {
+            let norm = col.dot(&col).sqrt();
+            if norm > 0.0 {
+                col /= norm;
+            }
+        }
+        let lu = if unit.ncols() > 0 {
+            apply(&unit)
+        } else {
+            unit.clone()
+        };
+        let mut eigenvalues = Vec::with_capacity(unit.ncols());
+        let mut residuals = Vec::with_capacity(unit.ncols());
+        for j in 0..unit.ncols() {
+            let x = unit.column(j);
+            let theta = x.dot(&lu.column(j));
+            let r = &lu.column(j) - &(&x * theta);
+            eigenvalues.push(theta);
+            residuals.push(r.dot(&r).sqrt());
+        }
+        let converged = residuals.iter().all(|&r| r <= tolerance);
+        Self {
+            eigenvalues,
+            residuals,
+            tolerance,
+            converged,
+            restarts,
+        }
+    }
+
+    /// Largest residual (0 when there are no columns).
+    pub fn max_residual(&self) -> f64 {
+        self.residuals.iter().copied().fold(0.0, f64::max)
+    }
+
+    pub(crate) fn into_result(self, u: Array2<f64>) -> Result<Array2<f64>> {
+        if self.converged {
+            Ok(u)
+        } else {
+            Err(Error::Backend(format!(
+                "eigensolver did not converge: max residual {:e} > tolerance {:e} after {} restarts",
+                self.max_residual(),
+                self.tolerance,
+                self.restarts
+            )))
+        }
+    }
+}
+
+pub(crate) fn row_normalize(u: &mut Array2<f64>) {
+    for mut row in u.rows_mut() {
+        let norm = row.dot(&row).sqrt();
+        if norm > 0.0 {
+            row /= norm;
+        }
+    }
 }
 
 /// Eigenvalues of a dense symmetric matrix, sorted ascending.
@@ -760,145 +1073,108 @@ pub fn symmetric_eigenvalues(a: &Array2<f64>, tol: f64, max_sweeps: usize) -> Re
     Ok(eigvals)
 }
 
-/// Approximate spectral embedding: the k eigenvectors after the trivial constant one.
+/// Spectral embedding: the k eigenvectors of \(L_{sym}\) after the trivial constant one.
 ///
 /// Requires a square, symmetric adjacency matrix with finite, nonnegative
 /// weights. Shape is checked, but symmetry and the weight domain are caller
 /// preconditions and are not validated. Signed and directed adjacencies are
 /// outside this embedding's supported domain.
 ///
-/// This uses **orthogonal iteration** on the positive-semidefinite shift
-/// \(A = 2I - L_{sym}\), followed by a Rayleigh--Ritz projection to order the
-/// approximate eigenvectors of \(L_{sym}\).
+/// Solver by size:
+/// - `n <= cfg.jacobi_max_n`: deterministic Jacobi eigendecomposition.
+/// - with the `faer` feature and `n <= 512`: `faer` dense eigendecomposition.
+/// - otherwise: a dependency-free block Krylov solver with thick restarts
+///   (at most `cfg.iters` restart cycles).
 ///
-/// This is a pragmatic, dependency-free default. It is intended for small/medium n
-/// where you can afford dense adjacency, but do not want LAPACK/BLAS.
+/// Every path checks the returned columns' residuals
+/// `||L u - theta u||` against `cfg.jacobi_tol * sqrt(n)`.
+///
+/// # Errors
+///
+/// [`Error::Backend`] if the eigenvectors did not converge to that tolerance.
+/// Use [`spectral_embedding_with_diagnostics`] to get the unconverged
+/// embedding together with its residuals instead.
 pub fn spectral_embedding(
     adj: &Array2<f64>,
     k: usize,
     cfg: &SpectralEmbeddingConfig,
 ) -> Result<Array2<f64>> {
+    let (u, diagnostics) = spectral_embedding_with_diagnostics(adj, k, cfg)?;
+    diagnostics.into_result(u)
+}
+
+/// [`spectral_embedding`] that returns convergence diagnostics instead of
+/// failing when the eigensolver does not reach its tolerance.
+///
+/// Check [`EmbeddingDiagnostics::converged`] before trusting the embedding.
+pub fn spectral_embedding_with_diagnostics(
+    adj: &Array2<f64>,
+    k: usize,
+    cfg: &SpectralEmbeddingConfig,
+) -> Result<(Array2<f64>, EmbeddingDiagnostics)> {
     let n = ensure_square(adj)?;
-    if k == 0 {
-        return Ok(Array2::zeros((n, 0)));
-    }
+    let tol = residual_tolerance(cfg, n);
     let start = if cfg.skip_first { 1 } else { 0 };
-    if n <= k + start {
+    if k > 0 && n <= k + start {
         return Err(Error::InvalidEmbeddingDim { k, n });
     }
 
     let lap = normalized_laplacian(adj);
+    let apply = |x: &Array2<f64>| lap.dot(x);
+    if k == 0 {
+        let u = Array2::zeros((n, 0));
+        let diagnostics = EmbeddingDiagnostics::from_columns(&u, apply, tol, 0);
+        return Ok((u, diagnostics));
+    }
 
-    // For small n, do a deterministic symmetric eigendecomposition (Jacobi).
-    if n <= cfg.jacobi_max_n {
+    let (mut u, restarts) = if n <= cfg.jacobi_max_n {
+        // Small n: deterministic symmetric eigendecomposition (Jacobi).
         let (eigvals, eigvecs) = jacobi_eigh(&lap, cfg.jacobi_tol, cfg.jacobi_max_sweeps);
-
-        // Sort eigenpairs by ascending eigenvalue.
         let mut order: Vec<usize> = (0..n).collect();
         order.sort_by(|&i, &j| eigvals[i].total_cmp(&eigvals[j]));
-
-        // Take k eigenvectors, optionally skipping the trivial one.
         let mut u = Array2::<f64>::zeros((n, k));
         for (out_col, &eig_idx) in order.iter().skip(start).take(k).enumerate() {
             u.column_mut(out_col).assign(&eigvecs.column(eig_idx));
         }
+        (u, 0)
+    } else {
+        dense_iterative_or_faer(&lap, k, start, tol, cfg)?
+    };
 
-        if cfg.row_normalize {
-            for mut row in u.rows_mut() {
-                let norm_sq: f64 = row.iter().map(|x| x * x).sum();
-                let norm = norm_sq.sqrt();
-                if norm > 0.0 {
-                    for x in row.iter_mut() {
-                        *x /= norm;
-                    }
-                }
-            }
-        }
-
-        return Ok(u);
+    let diagnostics = EmbeddingDiagnostics::from_columns(&u, apply, tol, restarts);
+    if cfg.row_normalize {
+        row_normalize(&mut u);
     }
+    Ok((u, diagnostics))
+}
 
-    // For n > jacobi_max_n:
-    //
-    // - Without `faer`: use dependency-free orthogonal iteration (approximate).
-    // - With `faer`: prefer scalable Krylov–Schur on larger n, otherwise exact dense EVD.
+/// Eigenvectors for `n > jacobi_max_n`: exact `faer` dense decomposition up
+/// to n = 512 when available, otherwise the block Krylov solver.
+fn dense_iterative_or_faer(
+    lap: &Array2<f64>,
+    k: usize,
+    start: usize,
+    tol: f64,
+    cfg: &SpectralEmbeddingConfig,
+) -> Result<(Array2<f64>, usize)> {
+    let n = lap.nrows();
     #[cfg(feature = "faer")]
     {
         if n <= 512 {
-            return spectral_embedding_faer_dense_from_laplacian(&lap, k, cfg);
+            let mut raw = cfg.clone();
+            raw.row_normalize = false;
+            return Ok((
+                spectral_embedding_faer_dense_from_laplacian(lap, k, &raw)?,
+                0,
+            ));
         }
-        spectral_embedding_faer_krylov_schur_from_laplacian(&lap, k, cfg)
     }
-
-    #[cfg(not(feature = "faer"))]
-    {
-        // Otherwise (no faer): orthogonal iteration on the PSD shift
-        // A = 2I - L_sym. Using I - L_sym would select eigenvalues by
-        // magnitude and can therefore converge to high-frequency modes on
-        // bipartite graphs.
-        let a = Array2::eye(n) * 2.0 - &lap;
-
-        // We want enough eigenvectors to allow skipping the first if requested.
-        let r = k + start;
-        let mut q = Array2::<f64>::zeros((n, r));
-        for i in 0..n {
-            for j in 0..r {
-                // Deterministic pseudo-random-ish init, avoids external RNG deps.
-                q[[i, j]] = ((((i + 1) * 1315423911usize) ^ ((j + 1) * 2654435761usize)) % 10_000)
-                    as f64
-                    / 10_000.0
-                    - 0.5;
-            }
-        }
-
-        // Orthonormalize columns (modified Gram-Schmidt).
-        fn orthonormalize(mut x: Array2<f64>) -> Array2<f64> {
-            let r = x.ncols();
-            for j in 0..r {
-                // subtract projections onto previous columns
-                for i in 0..j {
-                    let dot = x.column(i).dot(&x.column(j));
-                    let col_i = x.column(i).to_owned();
-                    let mut col_j = x.column_mut(j);
-                    col_j.scaled_add(-dot, &col_i);
-                }
-                // normalize
-                let norm = x.column(j).dot(&x.column(j)).sqrt();
-                if norm > 0.0 {
-                    x.column_mut(j).mapv_inplace(|v| v / norm);
-                }
-            }
-            x
-        }
-
-        q = orthonormalize(q);
-
-        for _ in 0..cfg.iters {
-            let z = a.dot(&q);
-            q = orthonormalize(z);
-        }
-
-        // Orthogonal iteration identifies an invariant subspace, but its
-        // columns are not ordered eigenvectors. Rayleigh--Ritz diagonalizes
-        // L within that subspace before skip_first is applied.
-        let projected = q.t().dot(&lap.dot(&q));
-        q = rayleigh_ritz_rotate(q, &projected, cfg);
-        let mut u = q.slice(ndarray::s![.., start..(start + k)]).to_owned();
-
-        if cfg.row_normalize {
-            for mut row in u.rows_mut() {
-                let norm_sq: f64 = row.iter().map(|x| x * x).sum();
-                let norm = norm_sq.sqrt();
-                if norm > 0.0 {
-                    for x in row.iter_mut() {
-                        *x /= norm;
-                    }
-                }
-            }
-        }
-
-        Ok(u)
-    }
+    let eig = smallest_eigenpairs(n, k + start, |x| lap.dot(x), tol, cfg.iters);
+    let u = eig
+        .vectors
+        .slice(ndarray::s![.., start..(start + k)])
+        .to_owned();
+    Ok((u, eig.restarts))
 }
 
 /// Spectral embedding via `faer` dense self-adjoint eigendecomposition.
@@ -937,97 +1213,6 @@ fn spectral_embedding_faer_dense_from_laplacian(
         .map_err(|e| Error::Backend(format!("faer self_adjoint_eigen: {e:?}")))?;
     let eigvecs = evd.U();
 
-    let mut u = Array2::<f64>::zeros((n, k));
-    for out_col in 0..k {
-        let col = start + out_col;
-        for i in 0..n {
-            u[[i, out_col]] = eigvecs[(i, col)];
-        }
-    }
-
-    if cfg.row_normalize {
-        for mut row in u.rows_mut() {
-            let norm_sq: f64 = row.iter().map(|x| x * x).sum();
-            let norm = norm_sq.sqrt();
-            if norm > 0.0 {
-                for x in row.iter_mut() {
-                    *x /= norm;
-                }
-            }
-        }
-    }
-
-    Ok(u)
-}
-
-/// Spectral embedding via `faer` Krylov–Schur partial eigensolver.
-///
-/// We compute the *top* eigenpairs of a shifted operator \(A = 2I - L\), which correspond to the
-/// *bottom* eigenpairs of the normalized Laplacian \(L\).
-///
-/// This path is intended for larger `n`, where a full dense eigendecomposition becomes too costly.
-#[cfg(feature = "faer")]
-fn spectral_embedding_faer_krylov_schur_from_laplacian(
-    lap: &Array2<f64>,
-    k: usize,
-    cfg: &SpectralEmbeddingConfig,
-) -> Result<Array2<f64>> {
-    let n = ensure_square(lap)?;
-    let start = if cfg.skip_first { 1 } else { 0 };
-    if k == 0 {
-        return Ok(Array2::zeros((n, 0)));
-    }
-    if n <= k + start {
-        return Err(Error::InvalidEmbeddingDim { k, n });
-    }
-
-    // Build A = 2I - L in faer.
-    let mut a = Mat::<f64>::zeros(n, n);
-    for i in 0..n {
-        for j in 0..n {
-            a[(i, j)] = -lap[[i, j]];
-        }
-        a[(i, i)] += 2.0;
-    }
-
-    let r = k + start;
-    let mut eigvecs = Mat::<f64>::zeros(n, r);
-    let mut eigvals = vec![0.0_f64; r];
-
-    // Deterministic initial guess vector.
-    let mut v0 = Col::<f64>::zeros(n);
-    for i in 0..n {
-        v0[i] = (((i + 1) * 2654435761usize % 10_000) as f64) / 10_000.0 - 0.5;
-    }
-
-    let par = Par::Seq;
-    let params = PartialEigenParams {
-        max_restarts: cfg.iters.max(1),
-        ..Default::default()
-    };
-
-    let req = partial_eigen_scratch(&a, r, par, params);
-    let mut mem = MemBuffer::new(req);
-    let stack = MemStack::new(&mut mem);
-
-    let info = partial_self_adjoint_eigen(
-        eigvecs.as_mut(),
-        &mut eigvals,
-        &a,
-        v0.as_ref(),
-        cfg.jacobi_tol,
-        par,
-        stack,
-        params,
-    );
-    if info.n_converged_eigen < r {
-        return Err(Error::Backend(format!(
-            "faer partial eigensolver converged {}/{} eigenpairs",
-            info.n_converged_eigen, r
-        )));
-    }
-
-    // Convert eigenvectors into ndarray embedding.
     let mut u = Array2::<f64>::zeros((n, k));
     for out_col in 0..k {
         let col = start + out_col;
