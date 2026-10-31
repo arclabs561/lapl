@@ -12,7 +12,7 @@ diagnostic example.
 
 ```toml
 [dependencies]
-lapl = "0.2"
+lapl = "0.3"
 ndarray = "0.16"
 ```
 
