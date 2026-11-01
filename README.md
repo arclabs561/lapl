@@ -39,6 +39,8 @@ let lap_norm = normalized_laplacian(&adj);    // L_sym = I - D^{-1/2} A D^{-1/2}
 | `normalized_laplacian` | Symmetric normalized (diagonal=1 for isolated nodes) |
 | `normalized_laplacian_checked` | Rejects graphs with isolated nodes |
 | `random_walk_laplacian` | L_rw = I - D^{-1} A |
+| `directed_laplacian` | Chung's symmetric Laplacian for strongly connected directed graphs |
+| `spectral_embedding` | Low-dimensional embedding from the bottom eigenvectors of L_sym |
 | `transition_matrix` | Random walk P = D^{-1} A |
 | `gaussian_similarity` | RBF kernel similarity |
 | `knn_graph` | k-nearest neighbor graph |
@@ -53,15 +55,15 @@ let lap_norm = normalized_laplacian(&adj);    // L_sym = I - D^{-1/2} A D^{-1/2}
   adjacency matrices with finite, nonnegative weights. Symmetry and the weight
   domain are caller preconditions, not runtime checks.
   `normalized_laplacian_checked` checks only for nonpositive row degrees;
-  it does not validate the other adjacency preconditions. Use
-  `directed_laplacian` for Chung's symmetric operator on directed graphs.
+  it does not validate the other adjacency preconditions.
 - The default API is dense: adjacency matrices and Laplacians are `n x n`
   `ndarray` arrays, so memory is `O(n^2)`.
 - `symmetric_eigenvalues` and the small-graph path of `spectral_embedding`
   (`n <= jacobi_max_n`, default 64) use classical Jacobi rotations. Each
   rotation scans all off-diagonal entries and convergence takes on the order
-  of `n^2` rotations, so cost grows roughly as `n^4`. The `max_sweeps` cap
-  counts rotations; when it is reached the result is returned unconverged.
+  of `n^2` rotations, so cost grows roughly as `n^4`. In
+  `symmetric_eigenvalues` the `max_sweeps` cap counts rotations; when it is
+  reached the eigenvalues are returned unconverged, without an error.
 - Larger graphs in `spectral_embedding` use a block Krylov eigensolver with
   thick restarts (with the `faer` feature, a dense eigendecomposition up to
   `n = 512`). The `sparse` feature adds a matrix-free embedding
